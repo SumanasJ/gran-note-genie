@@ -49,7 +49,8 @@ const NewTemplate = () => {
         description: description.trim(),
         prompt: prompt.trim(),
         sections: sections,
-        userId: "user-1" // This would come from auth in a real app
+        userId: "user-1",
+        isSystemTemplate: false
       });
 
       toast({
