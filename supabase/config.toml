@@ -1,1 +1,8 @@
+
 project_id = "jejxuekmhohuagjplnhd"
+
+[functions.transcribe-audio]
+verify_jwt = false
+
+[functions.enhance-notes]
+verify_jwt = false

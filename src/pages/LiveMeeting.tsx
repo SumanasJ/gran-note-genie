@@ -7,9 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Mic, Square, Pause, Play, FileText } from "lucide-react";
+import { Mic, Square, Pause, Play, FileText, Loader2 } from "lucide-react";
 import { getAllTemplates } from "@/lib/templates";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
 const LiveMeeting = () => {
   const navigate = useNavigate();
@@ -28,6 +29,7 @@ const LiveMeeting = () => {
   const [customPrompt, setCustomPrompt] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [showEnhancement, setShowEnhancement] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   
   // Audio recording
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
@@ -55,9 +57,22 @@ const LiveMeeting = () => {
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          sampleRate: 44100,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
       const chunks: Blob[] = [];
+      setAudioChunks(chunks);
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -65,27 +80,27 @@ const LiveMeeting = () => {
         }
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
+        console.log('Recording stopped, processing audio...');
         const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-        // Simulate transcription
-        simulateTranscription(audioBlob);
+        await transcribeAudio(audioBlob);
         stream.getTracks().forEach(track => track.stop());
       };
 
       setMediaRecorder(recorder);
-      setAudioChunks(chunks);
-      recorder.start(1000); // Record in 1-second chunks for real-time processing
+      recorder.start();
       setIsRecording(true);
       setRecordingTime(0);
       
       toast({
-        title: "Recording started",
-        description: "Your meeting is being recorded and transcribed.",
+        title: "开始录音",
+        description: "正在录制会议音频...",
       });
     } catch (error) {
+      console.error('Recording error:', error);
       toast({
-        title: "Recording failed",
-        description: "Could not access microphone. Please check permissions.",
+        title: "录音失败",
+        description: "无法访问麦克风，请检查权限设置。",
         variant: "destructive",
       });
     }
@@ -96,9 +111,17 @@ const LiveMeeting = () => {
       if (isPaused) {
         mediaRecorder.resume();
         setIsPaused(false);
+        toast({
+          title: "继续录音",
+          description: "录音已恢复。",
+        });
       } else {
         mediaRecorder.pause();
         setIsPaused(true);
+        toast({
+          title: "暂停录音",
+          description: "录音已暂停。",
+        });
       }
     }
   };
@@ -108,95 +131,128 @@ const LiveMeeting = () => {
       mediaRecorder.stop();
       setIsRecording(false);
       setIsPaused(false);
-      setShowEnhancement(true);
       
       toast({
-        title: "Recording stopped",
-        description: "Ready to enhance your notes with AI.",
+        title: "录音结束",
+        description: "正在处理音频并生成转录...",
       });
     }
   };
 
-  const simulateTranscription = (audioBlob: Blob) => {
-    // Simulate real-time transcription
-    const mockTranscripts = [
-      "Welcome everyone to today's meeting.",
-      "Let's start by reviewing our quarterly goals.",
-      "The main priority for Q2 is improving our conversion rate.",
-      "We need to focus on user experience and reducing friction.",
-      "John, can you share the latest analytics data?",
-      "Our current conversion rate is at 3.2%, up from 2.8% last quarter.",
-      "That's great progress, but we're aiming for 4% by end of Q2.",
-    ];
+  const transcribeAudio = async (audioBlob: Blob) => {
+    setIsTranscribing(true);
+    try {
+      console.log('Converting audio to base64...');
+      
+      // Convert blob to base64
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string;
+          // Remove data URL prefix
+          const base64 = result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+      });
+      
+      reader.readAsDataURL(audioBlob);
+      const audioBase64 = await base64Promise;
 
-    let index = 0;
-    const interval = setInterval(() => {
-      if (index < mockTranscripts.length && isRecording && !isPaused) {
-        setTranscript(prev => prev + (prev ? " " : "") + mockTranscripts[index]);
-        index++;
-      } else {
-        clearInterval(interval);
+      console.log('Sending audio for transcription...');
+      
+      const { data, error } = await supabase.functions.invoke('transcribe-audio', {
+        body: { audio: audioBase64 }
+      });
+
+      if (error) {
+        console.error('Transcription error:', error);
+        throw new Error(error.message || 'Transcription failed');
       }
-    }, 3000);
 
-    return () => clearInterval(interval);
+      if (data?.text) {
+        setTranscript(data.text);
+        setShowEnhancement(true);
+        toast({
+          title: "转录完成",
+          description: "音频已成功转换为文字，可以开始AI增强。",
+        });
+      } else {
+        throw new Error('No transcription text received');
+      }
+    } catch (error) {
+      console.error('Transcription failed:', error);
+      toast({
+        title: "转录失败",
+        description: error instanceof Error ? error.message : "音频转录过程中出现错误。",
+        variant: "destructive",
+      });
+    } finally {
+      setIsTranscribing(false);
+    }
   };
 
   const enhanceNotes = async () => {
     setIsProcessing(true);
     
-    // Simulate AI enhancement
-    setTimeout(() => {
-      const enhancedContent = generateEnhancedNotes();
-      const meetingId = `meeting-${Date.now()}`;
+    try {
+      const selectedTemplate = templates.find(t => t.id === selectedTemplateId);
       
-      // Save meeting data (would normally go to database)
-      localStorage.setItem(`meeting-${meetingId}`, JSON.stringify({
-        id: meetingId,
-        title: title || "Untitled Meeting",
-        notes,
-        transcript,
-        enhancedNotes: enhancedContent,
-        duration: recordingTime,
-        createdAt: new Date(),
-        templateId: selectedTemplateId
-      }));
-      
-      setIsProcessing(false);
-      
-      toast({
-        title: "Notes enhanced successfully",
-        description: "Your meeting notes have been processed with AI.",
+      const { data, error } = await supabase.functions.invoke('enhance-notes', {
+        body: {
+          transcript,
+          notes,
+          templatePrompt: selectedTemplate?.prompt,
+          customPrompt: customPrompt
+        }
       });
-      
-      navigate(`/meeting/${meetingId}`);
-    }, 3000);
-  };
 
-  const generateEnhancedNotes = () => {
-    const selectedTemplate = templates.find(t => t.id === selectedTemplateId);
-    
-    if (selectedTemplate) {
-      return {
-        "Key Discussion Points": "Quarterly goal review focusing on conversion rate improvement from 2.8% to target 4% by Q2 end.",
-        "Current Metrics": "Conversion rate currently at 3.2%, showing positive progress from previous quarter.",
-        "Action Items": "• John to provide detailed analytics breakdown\n• Team to focus on UX improvements\n• Reduce friction in user journey",
-        "Next Steps": "Continue monitoring conversion metrics and implement UX optimizations for Q2 target achievement."
-      };
-    } else if (customPrompt) {
-      return {
-        "AI Summary": "Meeting focused on quarterly performance review with emphasis on conversion rate optimization and user experience improvements."
-      };
-    } else {
-      return {
-        "Summary": "Meeting discussion covered quarterly goals, current metrics, and action items for Q2 objectives."
-      };
+      if (error) {
+        throw new Error(error.message || 'Enhancement failed');
+      }
+
+      if (data?.summary) {
+        const meetingId = `meeting-${Date.now()}`;
+        
+        // Save meeting data to localStorage
+        const meetingData = {
+          id: meetingId,
+          title: title || "未命名会议",
+          transcript,
+          aiSummary: data.summary,
+          duration: recordingTime,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          status: 'completed',
+          templateId: selectedTemplateId || 'custom'
+        };
+        
+        localStorage.setItem(`meeting-${meetingId}`, JSON.stringify(meetingData));
+        
+        toast({
+          title: "AI增强完成",
+          description: "会议纪要已生成完成。",
+        });
+        
+        navigate(`/meeting/${meetingId}`);
+      } else {
+        throw new Error('No summary received');
+      }
+    } catch (error) {
+      console.error('Enhancement error:', error);
+      toast({
+        title: "AI增强失败",
+        description: error instanceof Error ? error.message : "生成会议纪要时出现错误。",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Simple Header */}
+      {/* Header */}
       <div className="border-b border-gray-100 px-6 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -206,7 +262,7 @@ const LiveMeeting = () => {
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Meeting title..."
+              placeholder="会议标题..."
               className="text-lg font-medium border-none shadow-none px-0 focus-visible:ring-0"
             />
           </div>
@@ -220,7 +276,7 @@ const LiveMeeting = () => {
             {!isRecording ? (
               <Button onClick={startRecording} size="sm" className="bg-green-500 hover:bg-green-600">
                 <Mic className="h-4 w-4 mr-2" />
-                Start Recording
+                开始录音
               </Button>
             ) : (
               <div className="flex gap-2">
@@ -240,11 +296,11 @@ const LiveMeeting = () => {
         {/* Left: Notes Taking */}
         <div className="p-6 border-r border-gray-100">
           <div className="mb-4">
-            <h2 className="text-lg font-medium mb-2">Your Notes</h2>
+            <h2 className="text-lg font-medium mb-2">您的笔记</h2>
             {isRecording && (
               <div className="flex items-center gap-2 text-sm text-green-600 mb-3">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                Recording & transcribing...
+                正在录音中...
               </div>
             )}
           </div>
@@ -252,7 +308,7 @@ const LiveMeeting = () => {
           <Textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Take notes during your meeting..."
+            placeholder="在会议过程中记录您的笔记..."
             className="min-h-[400px] resize-none border-gray-200 text-base leading-relaxed"
           />
         </div>
@@ -262,14 +318,21 @@ const LiveMeeting = () => {
           {!showEnhancement ? (
             // Live Transcript
             <div>
-              <h2 className="text-lg font-medium mb-4">Live Transcript</h2>
+              <div className="flex items-center gap-2 mb-4">
+                <h2 className="text-lg font-medium">实时转录</h2>
+                {isTranscribing && (
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                )}
+              </div>
               <div 
                 ref={transcriptRef}
                 className="bg-white rounded-lg p-4 min-h-[400px] max-h-[500px] overflow-y-auto text-sm leading-relaxed border"
               >
-                {transcript || (
+                {transcript ? (
+                  <p className="whitespace-pre-wrap">{transcript}</p>
+                ) : (
                   <p className="text-gray-400 italic">
-                    Start recording to see live transcription...
+                    {isTranscribing ? "正在转录音频..." : "开始录音后将显示实时转录..."}
                   </p>
                 )}
               </div>
@@ -277,18 +340,18 @@ const LiveMeeting = () => {
           ) : (
             // AI Enhancement Options
             <div className="space-y-6">
-              <h2 className="text-lg font-medium">Enhance with AI</h2>
+              <h2 className="text-lg font-medium">AI 增强</h2>
               
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Choose Enhancement Method</CardTitle>
+                  <CardTitle className="text-base">选择增强方式</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div>
-                    <label className="text-sm font-medium">Use Template</label>
+                    <label className="text-sm font-medium">使用模板</label>
                     <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
                       <SelectTrigger className="mt-1">
-                        <SelectValue placeholder="Select a template..." />
+                        <SelectValue placeholder="选择一个模板..." />
                       </SelectTrigger>
                       <SelectContent>
                         {templates.map((template) => (
@@ -296,7 +359,7 @@ const LiveMeeting = () => {
                             <div className="flex items-center gap-2">
                               {template.name}
                               {template.isSystemTemplate && (
-                                <Badge variant="secondary" className="text-xs">System</Badge>
+                                <Badge variant="secondary" className="text-xs">系统</Badge>
                               )}
                             </div>
                           </SelectItem>
@@ -305,14 +368,14 @@ const LiveMeeting = () => {
                     </Select>
                   </div>
                   
-                  <div className="text-center text-sm text-gray-500">or</div>
+                  <div className="text-center text-sm text-gray-500">或</div>
                   
                   <div>
-                    <label className="text-sm font-medium">Custom Enhancement Prompt</label>
+                    <label className="text-sm font-medium">自定义增强指令</label>
                     <Textarea
                       value={customPrompt}
                       onChange={(e) => setCustomPrompt(e.target.value)}
-                      placeholder="Tell AI how you want your notes structured..."
+                      placeholder="告诉AI如何处理您的会议内容..."
                       className="mt-1"
                       rows={3}
                     />
@@ -323,7 +386,14 @@ const LiveMeeting = () => {
                     disabled={isProcessing || (!selectedTemplateId && !customPrompt)}
                     className="w-full bg-purple-600 hover:bg-purple-700"
                   >
-                    {isProcessing ? "Processing..." : "Enhance Notes with AI"}
+                    {isProcessing ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        处理中...
+                      </>
+                    ) : (
+                      "使用 AI 增强笔记"
+                    )}
                   </Button>
                 </CardContent>
               </Card>
@@ -331,13 +401,13 @@ const LiveMeeting = () => {
               {/* Preview of what will be enhanced */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Content to Enhance</CardTitle>
+                  <CardTitle className="text-base">待增强内容</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="text-sm text-gray-600 space-y-2">
-                    <div><strong>Your Notes:</strong> {notes.length} characters</div>
-                    <div><strong>Transcript:</strong> {transcript.length} characters</div>
-                    <div><strong>Duration:</strong> {formatTime(recordingTime)}</div>
+                    <div><strong>您的笔记:</strong> {notes.length} 字符</div>
+                    <div><strong>转录内容:</strong> {transcript.length} 字符</div>
+                    <div><strong>录音时长:</strong> {formatTime(recordingTime)}</div>
                   </div>
                 </CardContent>
               </Card>
